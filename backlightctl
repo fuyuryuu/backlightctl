@@ -13,7 +13,7 @@ usage() {
 	Usage: ${0##*/} (-v) (+|-)[integer](%)
 	 Simple backlight control which supports setting
 	 absolute/relative values, and absolute/relative
-	 percentages. Roughly. It \e[3mis\e[m bash...
+	 percentages. Roughly. It \033[3mis\033[m bash...
 	 Backlight level: $(((CURRENT_LEVEL*100) / MAX_LEVEL))% ($CURRENT_LEVEL)
 	 Accepted values: $MIN_PERCENT-100% ($MIN_LEVEL-$MAX_LEVEL)
 	  -v Display verbose output
