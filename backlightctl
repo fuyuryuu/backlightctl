@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 # Bash utility for setting display backlight level
+# 2026-11-17, fuyuryuu
 # License: none
 
 ### FUNCTION DEFINITIONS #######################################################
@@ -13,7 +14,7 @@ usage() {
 	Usage: ${0##*/} (-v) (+|-)[integer](%)
 	 Simple backlight control which supports setting
 	 absolute/relative values, and absolute/relative
-	 percentages. Roughly. It \033[3mis\033[m bash...
+	 percentages. Roughly. It \e[3mis\e[m bash...
 	 Backlight level: $(((CURRENT_LEVEL*100) / MAX_LEVEL))% ($CURRENT_LEVEL)
 	 Accepted values: $MIN_PERCENT-100% ($MIN_LEVEL-$MAX_LEVEL)
 	  -v Display verbose output
@@ -36,6 +37,8 @@ set_backlight() {
 	if (($EUID == 0)) ; then
 		printf -- '%s' $1 > "$DISPLAY_PATH/brightness"
 	else
+		# Check here as we don't actually need the dep if running as root
+		type sponge &>/dev/null || fatal "Dependency 'sponge' not installed"
 		printf -- '%s' $1 | sudo sponge "$DISPLAY_PATH/brightness"
 	fi || fatal "Setting backlight level failed"
 	vbose "Set backlight to $DESIRED_LEVEL/$MAX_LEVEL"
@@ -173,7 +176,6 @@ calc_desired_level() {
 }
 
 ### SCRIPT START ###############################################################
-type sponge &>/dev/null || fatal "Dependency 'sponge' not installed"
 # Dynamically find display and ensure
 # brightness files are present
 # If successful, populate $DISPLAY_PATH var
