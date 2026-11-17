@@ -34,12 +34,10 @@ vbose() {
 
 set_backlight() {
 	if (($EUID == 0)) ; then
-		printf -- '%s' $1 > "$DISPLAY_PATH/brightness" \
-			|| fatal "Setting backlight level failed"
+		printf -- '%s' $1 > "$DISPLAY_PATH/brightness"
 	else
-		printf -- '%s' $1 | sudo sponge "$DISPLAY_PATH/brightness" \
-			|| fatal "Setting backlight level failed"
-	fi
+		printf -- '%s' $1 | sudo sponge "$DISPLAY_PATH/brightness"
+	fi || fatal "Setting backlight level failed"
 	vbose "Set backlight to $DESIRED_LEVEL/$MAX_LEVEL"
 }
 
