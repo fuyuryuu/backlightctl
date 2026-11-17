@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+
+# Bash utility for setting display backlight level
+# License: none
+
+### FUNCTION DEFINITIONS #######################################################
+usage() {
+	local code=0 ; if (($# != 0)) ; then
+		printf -- '\033[1;31m[error]:\033[m %s\n' "$*" >&2
+		code=1
+	fi
+	read -r -d '' usage <<-EOF
+	Usage: ${0##*/} (-v) (+|-)[integer](%)
+	 Simple backlight control which supports setting
+	 absolute/relative values, and absolute/relative
+	 percentages. Roughly. It \e[3mis\e[m bash...
+	 Backlight level: $(((CURRENT_LEVEL*100) / MAX_LEVEL))% ($CURRENT_LEVEL)
+	 Accepted values: $MIN_PERCENT-100% ($MIN_LEVEL-$MAX_LEVEL)
+	  -v Display verbose output
+	EOF
+	printf -- '%b\n' "$usage"
+	exit $code
+}
+
+fatal() {
+	printf -- '\033[1;31m[error]:\033[m %s\n' "$*" >&2
+	exit 1
+}
+
+vbose() {
+	[[ "${VERBOSE:+true}" != true ]] && return
+	printf -- '\033[1;34m[info]:\033[m %s\n' "$*"
+}
+
+set_backlight() {
+	if (($EUID == 0)) ; then
+		printf -- '%s' $1 > "$DISPLAY_PATH/brightness" \
+			|| fatal "Setting backlight level failed"
+	else
+		printf -- '%s' $1 | sudo sponge "$DISPLAY_PATH/brightness" \
+			|| fatal "Setting backlight level failed"
+	fi
+	vbose "Set backlight to $DESIRED_LEVEL/$MAX_LEVEL"
+}
+
+detect_display() {
+	local display num_displays=0 backlight='/sys/class/backlight'
+	[[ -d "$backlight" ]] || fatal "'$backlight' directory not found"
+	for display in $backlight/* ; do
+		# Skip if no non-hidden items
+		[[ "$display" =~ \* ]] && continue
+		# Skip if item is not a directory
+		[[ -d "$display" ]] || continue
+		DISPLAY_PATH="$display"
+		((num_displays++))
+	done
+	if ((num_displays > 1)) ; then
+		fatal "More than one display is not supported at this time"
+	elif ((num_displays == 0)) ; then
+		fatal "Unable to detect a compatible display in '$backlight'"
+	fi
+	if ! [[ -s "$DISPLAY_PATH/brightness" \
+			|| -s "$DISPLAY_PATH/max_brightness" ]] ; then
+		display="${DISPLAY_PATH##*/}"
+		fatal "Unable to obtain backlight level info for display '$display'"
+	fi
+	vbose "Found display '$display' in '$backlight'"
+}
+
+calc_current_levels() {
+	# Get current and max backlight levels from brightness files
+	declare -ig CURRENT_LEVEL=$(< "$DISPLAY_PATH/brightness")
+	declare -ig MAX_LEVEL=$(< "$DISPLAY_PATH/max_brightness")
+	# Calculate minimum reasonably legible backlight level at ~5%
+	declare -ig MIN_LEVEL='MAX_LEVEL * 5 / 100'
+	if ((MAX_LEVEL == 0 || MIN_LEVEL == 0)) ; then
+		fatal "Parsing backlight level settings failed"
+	fi
+	# Calculate min and current percentages
+	declare -ig MIN_PERCENT='(MIN_LEVEL*100) / MAX_LEVEL'
+	declare -ig CURRENT_PERCENT='(CURRENT_LEVEL*100) / MAX_LEVEL'
+}
+
+set_min_backlight() {
+	((CURRENT_LEVEL != 0)) && return
+	vbose "Backlight level is 0 ... you may be unable to see this message"
+	set_backlight "$MIN_LEVEL"
+	CURRENT_LEVEL=$MIN_LEVEL
+	usage
+}
+
+parse_args() {
+	# Handle verbosity flag
+	unset VERBOSE ; if [[ "$1" == -v ]] ; then
+		VERBOSE=true
+		shift
+	fi
+	# Handle num args
+	if (($# == 0)) ; then
+		usage
+	elif (($# > 1)) ; then
+		usage "Requires one argument"
+	fi
+	# Determine and set mode before we proceed
+	if [[ "$1" =~ ^\+[1-9][0-9]*$ ]] ; then
+		MODE=relative_additive
+	elif [[ "$1" =~ ^-[1-9][0-9]*$ ]] ; then
+		MODE=relative_subtractive
+	elif [[ "$1" =~ ^[5-9]\%$|^[1-9][0-9]+\%$ ]] ; then
+		MODE=absolute_percentage
+	elif [[ "$1" =~ ^\+[1-9][0-9]*\%$ ]] ; then
+		MODE=relative_additive_percentage
+	elif [[ "$1" =~ ^-[1-9][0-9]*\%$ ]] ; then
+		MODE=relative_subtractive_percentage
+	elif [[ "$1" =~ ^[1-9][0-9]*$ ]] ; then
+		MODE=absolute
+	else
+		usage "Invalid argument '$1'"
+	fi
+	ARG=${1//[^0-9]/} # remove all but digits
+}
+
+calc_desired_level() {
+	case $MODE in
+		absolute)
+			if ((ARG > MAX_LEVEL)) ; then
+				fatal "Maximum supported backlight level is $MAX_LEVEL"
+			elif ((ARG < MIN_LEVEL)) ; then
+				fatal "Minimum readable backlight level is $MIN_LEVEL"
+			fi
+			declare -ig DESIRED_LEVEL=$ARG ;;
+		relative_additive)
+			# ensure arg plus current isn't greater than max
+			if (((CURRENT_LEVEL+ARG) > MAX_LEVEL)) ; then
+				fatal "Cannot increase backlight level by $ARG"
+			fi
+			declare -ig DESIRED_LEVEL=$((CURRENT_LEVEL + ARG)) ;;
+		relative_subtractive)
+			# ensure current minus arg isn't less than min
+			if (((CURRENT_LEVEL-ARG) < MIN_LEVEL)) ; then
+				fatal "Cannot decrease backlight level by $ARG"
+			fi
+			declare -ig DESIRED_LEVEL=$((CURRENT_LEVEL - ARG)) ;;
+		absolute_percentage)
+			if ! ((ARG >= 5 && ARG <= 100)) ; then
+				fatal "Absolute percentages must range from $MIN_PERCENT-100%"
+			fi
+			declare -ig DESIRED_LEVEL=$((MAX_LEVEL * ARG / 100))
+			if ((DESIRED_LEVEL < MIN_LEVEL)) ; then
+				# lock to min val if (when) maths is wonky
+				declare -ig DESIRED_LEVEL=$MIN_LEVEL
+			fi ;;
+		relative_additive_percentage)
+			# calc value to alter from current level
+			ARG=$((CURRENT_LEVEL * ARG / 100))
+			# ensure arg plus current isn't greater than max
+			if (((CURRENT_LEVEL+ARG) > MAX_LEVEL)) ; then
+				# calc max percentage increase till we hit max
+				local max=$(((MAX_LEVEL*100) / (CURRENT_LEVEL-1) - 100))
+				fatal "Cannot increase backlight level by more than $max%"
+			fi
+			declare -ig DESIRED_LEVEL=$((CURRENT_LEVEL + ARG)) ;;
+		relative_subtractive_percentage)
+			# calc value to alter from current level
+			ARG=$((CURRENT_LEVEL * ARG / 100))
+			# ensure current minus arg isn't less than min
+			if (((CURRENT_LEVEL-ARG) < MIN_LEVEL)) ; then
+				# calc max percentage decrease till we hit min
+				local max=$(((10000-(MIN_LEVEL*10000) / CURRENT_LEVEL) / 100))
+				fatal "Cannot decrease backlight level by more than $max%"
+			fi
+			declare -ig DESIRED_LEVEL=$((CURRENT_LEVEL - ARG)) ;;
+	esac
+	((DESIRED_LEVEL == 0)) && fatal "Brightness level $DESIRED_LEVEL not valid"
+}
+
+### SCRIPT START ###############################################################
+type sponge &>/dev/null || fatal "Dependency 'sponge' not installed"
+# Dynamically find display and ensure
+# brightness files are present
+# If successful, populate $DISPLAY_PATH var
+# var with filepath info
+detect_display
+# Retrieve backlight brightness levels and
+# populate $CURRENT_LEVEL and $MAX_LEVEL vars
+# Calculate $MIN_LEVEL, $CURRENT_PERCENT and
+# $MIN_PERCENT vars
+calc_current_levels
+# Failsafe if backlight is off - set to
+# $MIN_LEVEL, display usage and exit
+set_min_backlight
+# Sanity check args, dermine mode and
+# populate $ARG with the given integer
+parse_args "$@"
+# Parse, range check and calculate absolute
+# value from relative / percentage values and
+# populate $DESIRED_LEVEL
+calc_desired_level
+# Set backlight level
+set_backlight "$DESIRED_LEVEL"
